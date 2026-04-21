@@ -7,7 +7,11 @@ use async_trait::async_trait;
 use std::io;
 use std::io::Write;
 use std::path::Path;
+use std::time::{Duration, Instant};
 use zellij_utils::ipc::{IpcReceiverWithContext, IpcSenderWithContext};
+
+const IPC_REPLY_CONNECT_RETRY_DURATION: Duration = Duration::from_millis(50);
+const IPC_REPLY_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Windows async signal listener.
 ///
@@ -79,7 +83,7 @@ pub(crate) struct BlockingSignalIterator {
 mod win_ctrl_handler {
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    use windows_sys::Win32::Foundation::BOOL;
+    use windows_sys::core::BOOL;
     use windows_sys::Win32::System::Console::{CTRL_BREAK_EVENT, CTRL_CLOSE_EVENT, CTRL_C_EVENT};
 
     pub static CTRL_QUIT_RECEIVED: AtomicBool = AtomicBool::new(false);
@@ -163,25 +167,35 @@ impl Iterator for BlockingSignalIterator {
 pub(crate) fn setup_ipc(
     socket: interprocess::local_socket::Stream,
     path: &Path,
-) -> (
+) -> io::Result<(
     IpcSenderWithContext<zellij_utils::ipc::ClientToServerMsg>,
     IpcReceiverWithContext<zellij_utils::ipc::ServerToClientMsg>,
-) {
+)> {
     let reply_socket;
+    let start_time = Instant::now();
     loop {
         match zellij_utils::consts::ipc_connect_reply(path) {
             Ok(sock) => {
                 reply_socket = sock;
                 break;
             },
-            Err(_) => {
-                std::thread::sleep(std::time::Duration::from_millis(50));
+            Err(err) => {
+                if start_time.elapsed() >= IPC_REPLY_CONNECT_TIMEOUT {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!(
+                            "timed out waiting for reply IPC after {}s (last error: {err})",
+                            IPC_REPLY_CONNECT_TIMEOUT.as_secs(),
+                        ),
+                    ));
+                }
+                std::thread::sleep(IPC_REPLY_CONNECT_RETRY_DURATION);
             },
         }
     }
     let sender = IpcSenderWithContext::new(socket);
     let receiver = IpcReceiverWithContext::new(reply_socket);
-    (sender, receiver)
+    Ok((sender, receiver))
 }
 
 /// Enable ENABLE_VIRTUAL_TERMINAL_PROCESSING on stdout so that ConPTY enters
