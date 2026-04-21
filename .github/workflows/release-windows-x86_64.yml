@@ -1,0 +1,165 @@
+name: Release Windows x86_64
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Release tag to create or update
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+    steps:
+      - name: Create draft release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ inputs.tag_name }}
+          release_name: Release ${{ inputs.tag_name }} (Windows x86_64)
+          draft: true
+          prerelease: false
+
+  build-release:
+    needs: create-release
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - release
+          - no-web
+    env:
+      RUST_BACKTRACE: 1
+      TARGET: x86_64-pc-windows-msvc
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: wasm32-wasip1
+          cache: false
+          rustflags: ""
+
+      - name: Install NASM
+        uses: ilammy/setup-nasm@v1
+
+      - name: Build release binary
+        if: matrix.variant == 'release'
+        env:
+          RUSTFLAGS: "-C target-feature=+crt-static"
+        run: cargo xtask ci build-release
+
+      - name: Build release binary (no-web)
+        if: matrix.variant == 'no-web'
+        env:
+          RUSTFLAGS: "-C target-feature=+crt-static"
+        run: cargo xtask ci build-release --no-web
+
+      - name: Create release archive
+        id: make-artifact
+        shell: pwsh
+        run: |
+          $prefix = if ('${{ matrix.variant }}' -eq 'release') { 'zellij' } else { 'zellij-no-web' }
+          $asset_name = "$prefix-$env:TARGET.zip"
+          Compress-Archive -Path "target/release/zellij.exe" -DestinationPath $asset_name
+          echo "asset_name=$asset_name" >> $env:GITHUB_OUTPUT
+
+      - name: Create release checksum
+        id: make-checksum
+        shell: pwsh
+        run: |
+          $prefix = if ('${{ matrix.variant }}' -eq 'release') { 'zellij' } else { 'zellij-no-web' }
+          $checksum_name = "$prefix-$env:TARGET.sha256sum"
+          $hash = (Get-FileHash "target/release/zellij.exe" -Algorithm SHA256).Hash.ToLower()
+          "$hash  target/release/zellij.exe" | Out-File -Encoding ascii $checksum_name
+          echo "checksum_name=$checksum_name" >> $env:GITHUB_OUTPUT
+
+      - name: Upload release archive
+        uses: actions/upload-release-asset@v1.0.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ${{ steps.make-artifact.outputs.asset_name }}
+          asset_name: ${{ steps.make-artifact.outputs.asset_name }}
+          asset_content_type: application/octet-stream
+
+      - name: Upload release checksum
+        uses: actions/upload-release-asset@v1.0.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ${{ steps.make-checksum.outputs.checksum_name }}
+          asset_name: ${{ steps.make-checksum.outputs.checksum_name }}
+          asset_content_type: text/plain
+
+      - name: Install WiX v6
+        run: dotnet tool install --global wix --version 6.0.2
+
+      - name: Add WiX UI extension
+        run: wix extension add WixToolset.UI.wixext/6.0.2
+
+      - name: Build MSI installer
+        id: build-msi
+        shell: pwsh
+        run: |
+          $prefix = if ('${{ matrix.variant }}' -eq 'release') { 'zellij' } else { 'zellij-no-web' }
+          $version = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"(.+)"' | Select-Object -First 1).Matches.Groups[1].Value
+          $msi_name = "$prefix-$env:TARGET-installer.msi"
+          $msi_path = "target\wix\$msi_name"
+          New-Item -ItemType Directory -Force -Path target\wix
+          wix build wix\main.wxs wix\Zellij.wxl `
+            -d Version=$version `
+            -arch x64 `
+            -ext WixToolset.UI.wixext `
+            -o $msi_path
+          echo "msi_name=$msi_name" >> $env:GITHUB_OUTPUT
+          echo "msi_path=$msi_path" >> $env:GITHUB_OUTPUT
+
+      - name: Create MSI checksum
+        id: make-checksum-msi
+        shell: pwsh
+        run: |
+          $prefix = if ('${{ matrix.variant }}' -eq 'release') { 'zellij' } else { 'zellij-no-web' }
+          $checksum_name = "$prefix-$env:TARGET-installer.sha256sum"
+          $msi_name = "$prefix-$env:TARGET-installer.msi"
+          $hash = (Get-FileHash "target\wix\$msi_name" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $msi_name" | Out-File -Encoding ascii $checksum_name
+          echo "checksum_name=$checksum_name" >> $env:GITHUB_OUTPUT
+
+      - name: Upload MSI installer
+        uses: actions/upload-release-asset@v1.0.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ${{ steps.build-msi.outputs.msi_path }}
+          asset_name: ${{ steps.build-msi.outputs.msi_name }}
+          asset_content_type: application/octet-stream
+
+      - name: Upload MSI checksum
+        uses: actions/upload-release-asset@v1.0.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ${{ steps.make-checksum-msi.outputs.checksum_name }}
+          asset_name: ${{ steps.make-checksum-msi.outputs.checksum_name }}
+          asset_content_type: text/plain
