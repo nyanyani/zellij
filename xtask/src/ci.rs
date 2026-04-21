@@ -166,13 +166,16 @@ fn build_release(sh: &Shell, no_web: bool) -> anyhow::Result<()> {
                     .context("Failed to check web features for build-release")?
                 {
                     Some(features) => {
+                        let features = if features.is_empty() {
+                            "vendored_curl".to_owned()
+                        } else {
+                            format!("{features} vendored_curl")
+                        };
                         let mut cmd = cmd!(
                             sh,
                             "{cargo} build --verbose --release --no-default-features"
                         );
-                        if !features.is_empty() {
-                            cmd = cmd.arg("--features").arg(features);
-                        }
+                        cmd = cmd.arg("--features").arg(features);
                         cmd.run().map_err(anyhow::Error::new)
                     },
                     None => cmd!(sh, "{cargo} build --verbose --release")
@@ -180,7 +183,7 @@ fn build_release(sh: &Shell, no_web: bool) -> anyhow::Result<()> {
                         .map_err(anyhow::Error::new),
                 }
             } else {
-                cmd!(sh, "{cargo} build --verbose --release")
+                cmd!(sh, "{cargo} build --verbose --release --features vendored_curl")
                     .run()
                     .map_err(anyhow::Error::new)
             }
@@ -257,21 +260,24 @@ fn cross_compile(sh: &Shell, target: &OsString, no_web: bool) -> anyhow::Result<
                     .context("Failed to check web features for cross compilation")?
                 {
                     Some(features) => {
+                        let features = if features.is_empty() {
+                            "vendored_curl".to_owned()
+                        } else {
+                            format!("{features} vendored_curl")
+                        };
                         let mut cmd = cmd!(sh, "{cross} build --verbose --release --target {target} --no-default-features");
-                        if !features.is_empty() {
-                            cmd = cmd.arg("--features").arg(features);
-                        }
+                        cmd = cmd.arg("--features").arg(features);
                         cmd.run().map_err(anyhow::Error::new)
                     },
                     None => {
                         // Main crate doesn't have web_server_capability, build normally
-                        cmd!(sh, "{cross} build --verbose --release --target {target}")
+                        cmd!(sh, "{cross} build --verbose --release --target {target} --features vendored_curl")
                             .run()
                             .map_err(anyhow::Error::new)
                     },
                 }
             } else {
-                cmd!(sh, "{cross} build --verbose --release --target {target}")
+                cmd!(sh, "{cross} build --verbose --release --target {target} --features vendored_curl")
                     .run()
                     .map_err(anyhow::Error::new)
             }

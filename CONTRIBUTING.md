@@ -27,6 +27,8 @@ mandown`) is used and the work is done on a markdown file in docs/MANPAGE.md.
 
 To build zellij, you'll need [`protoc`](https://github.com/protocolbuffers/protobuf#protobuf-compiler-installation) installed. This is used to compile the .proto files into Rust assets. These protocol buffers are used for communication between Zellij and its plugins across the wasm boundary.
 
+On Windows, this repository also includes a `.envrc` that can load `scripts/prepare-env.ps1` automatically via `direnv`. After installing `direnv` and enabling the PowerShell hook, run `direnv allow` once in the repo root.
+
 Here are some of the commands currently supported by the build system:
 
 ```sh

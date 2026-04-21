@@ -96,6 +96,15 @@ pub fn build(sh: &Shell, flags: flags::Build) -> anyhow::Result<()> {
                     .context("Failed to check web features")?
                 {
                     Some(features) => {
+                        let features = if flags.release && *crate_name == "." {
+                            if features.is_empty() {
+                                "vendored_curl".to_owned()
+                            } else {
+                                format!("{features} vendored_curl")
+                            }
+                        } else {
+                            features
+                        };
                         base_cmd = base_cmd.arg("--no-default-features");
                         if !features.is_empty() {
                             base_cmd = base_cmd.arg("--features");
@@ -106,6 +115,8 @@ pub fn build(sh: &Shell, flags: flags::Build) -> anyhow::Result<()> {
                         // Crate doesn't have web features, build normally
                     },
                 }
+            } else if flags.release && *crate_name == "." {
+                base_cmd = base_cmd.args(["--features", "vendored_curl"]);
             }
             base_cmd.run().with_context(err_context)?;
         }
