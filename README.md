@@ -65,6 +65,13 @@ You can also install (compile) with `cargo`:
 cargo install --locked zellij
 ```
 
+If you want a self-contained source build that vendors curl/OpenSSL instead of using
+system libraries, enable the feature explicitly:
+
+```bash
+cargo install --locked zellij --features vendored_curl
+```
+
 #### Try Zellij without installing
 
 bash/zsh:
@@ -84,6 +91,7 @@ That being said - no-one will stop you from using it (and bug reports involving 
 ## How do I start a development environment?
 
 * Clone the project
+* If you use `direnv` on Windows/PowerShell, run `direnv allow` once to auto-load `scripts/prepare-env.ps1` when you enter this repo
 * In the project folder, for debug builds run: `cargo xtask run`
 * To run all tests: `cargo xtask test`
 
