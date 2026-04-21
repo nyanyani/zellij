@@ -1,3 +1,5 @@
+#[cfg(not(windows))]
+use crate::ipc::{IpcReceiverWithContext, ServerToClientMsg};
 use crate::{
     consts::{
         is_ipc_socket, session_info_folder_for_session, session_layout_cache_file_name,
@@ -5,7 +7,7 @@ use crate::{
     },
     envs,
     input::layout::Layout,
-    ipc::{ClientToServerMsg, IpcReceiverWithContext, IpcSenderWithContext, ServerToClientMsg},
+    ipc::{ClientToServerMsg, IpcSenderWithContext},
 };
 use anyhow;
 use humantime::format_duration;
@@ -13,6 +15,7 @@ use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 use std::{fs, io, process};
 use suggest::Suggest;
+use windows_sys::Win32::Foundation::HANDLE;
 
 pub fn get_sessions() -> Result<Vec<(String, Duration)>, io::ErrorKind> {
     match fs::read_dir(&*ZELLIJ_SOCK_DIR) {
@@ -191,7 +194,7 @@ fn assert_socket(name: &str) -> bool {
     };
     let alive = unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if handle == 0 {
+        if handle == (0 as HANDLE) {
             false
         } else {
             CloseHandle(handle);
@@ -295,23 +298,9 @@ pub fn kill_session(name: &str) {
     let path = &*ZELLIJ_SOCK_DIR.join(name);
     match ipc_connect(path) {
         Ok(stream) => {
-            // On Windows, the server uses a dual-pipe architecture: the main pipe
-            // for client→server and a reply pipe for server→client. We must:
-            // 1. Connect to the reply pipe (so the server unblocks from
-            //    reply_listener.accept() and spawns the route thread)
-            // 2. Send KillSession on the main pipe
-            // 3. Wait for the Exit response on the reply pipe (so we don't
-            //    disconnect before the server processes the message)
             #[cfg(windows)]
             {
-                let reply = crate::consts::ipc_connect_reply(path);
-                let _ = IpcSenderWithContext::<ClientToServerMsg>::new(stream)
-                    .send_client_msg(ClientToServerMsg::KillSession);
-                if let Ok(reply_stream) = reply {
-                    let mut receiver: IpcReceiverWithContext<ServerToClientMsg> =
-                        IpcReceiverWithContext::new(reply_stream);
-                    let _ = receiver.recv_server_msg();
-                }
+                send_kill_session_on_windows(stream, path);
             }
             #[cfg(not(windows))]
             {
@@ -326,6 +315,27 @@ pub fn kill_session(name: &str) {
     };
 }
 
+// On Windows, the server uses a dual-pipe architecture: the main pipe
+// for client→server and a reply pipe for server→client. We must:
+// 1. Connect to the reply pipe (so the server unblocks from
+//    reply_listener.accept() and spawns the route thread)
+// 2. Send KillSession on the main pipe
+// 3. Wait for the Exit response on the reply pipe (so we don't
+//    disconnect before the server processes the message)
+#[cfg(windows)]
+fn send_kill_session_on_windows(
+    stream: interprocess::local_socket::Stream,
+    path: &std::path::Path,
+) {
+    // Keep the Windows dual-pipe handshake intact by connecting to the reply
+    // pipe first, but do not block waiting for the Exit acknowledgement. In
+    // some console-host setups the kill request is accepted while the reply
+    // side never responds, which makes kill/delete hang indefinitely.
+    let _reply_stream = crate::consts::ipc_connect_reply(path).ok();
+    let _ = IpcSenderWithContext::<ClientToServerMsg>::new(stream)
+        .send_client_msg(ClientToServerMsg::KillSession);
+}
+
 pub fn delete_session(name: &str, force: bool) {
     if force {
         use crate::consts::ipc_connect;
@@ -333,14 +343,7 @@ pub fn delete_session(name: &str, force: bool) {
         let _ = ipc_connect(path).ok().map(|stream| {
             #[cfg(windows)]
             {
-                let reply = crate::consts::ipc_connect_reply(path);
-                let _ = IpcSenderWithContext::<ClientToServerMsg>::new(stream)
-                    .send_client_msg(ClientToServerMsg::KillSession);
-                if let Ok(reply_stream) = reply {
-                    let mut receiver: IpcReceiverWithContext<ServerToClientMsg> =
-                        IpcReceiverWithContext::new(reply_stream);
-                    let _ = receiver.recv_server_msg();
-                }
+                send_kill_session_on_windows(stream, path);
             }
             #[cfg(not(windows))]
             {

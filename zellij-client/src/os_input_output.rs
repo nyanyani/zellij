@@ -17,7 +17,7 @@ use std::io::prelude::*;
 use std::io::IsTerminal;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::{io, thread, time};
+use std::{io, process, thread, time};
 use zellij_utils::{
     data::Palette,
     errors::ErrorContext,
@@ -26,6 +26,8 @@ use zellij_utils::{
 };
 
 const SIGWINCH_CB_THROTTLE_DURATION: time::Duration = time::Duration::from_millis(50);
+const IPC_CONNECT_RETRY_DURATION: time::Duration = time::Duration::from_millis(50);
+const IPC_CONNECT_TIMEOUT: time::Duration = time::Duration::from_secs(10);
 
 pub(crate) const ENABLE_MOUSE_SUPPORT: &str =
     "\u{1b}[?1000h\u{1b}[?1002h\u{1b}[?1003h\u{1b}[?1015h\u{1b}[?1006h";
@@ -277,18 +279,39 @@ impl ClientOsApi for ClientOsInputOutput {
     }
     fn connect_to_server(&self, path: &Path) {
         let socket;
+        let start_time = time::Instant::now();
         loop {
             match zellij_utils::consts::ipc_connect(path) {
                 Ok(sock) => {
                     socket = sock;
                     break;
                 },
-                Err(_) => {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
+                Err(err) => {
+                    if start_time.elapsed() >= IPC_CONNECT_TIMEOUT {
+                        let session_name = path
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| path.display().to_string());
+                        eprintln!(
+                            "Timed out waiting for Zellij session '{session_name}' IPC to become ready after {}s. Last error: {err}",
+                            IPC_CONNECT_TIMEOUT.as_secs()
+                        );
+                        process::exit(1);
+                    }
+                    thread::sleep(IPC_CONNECT_RETRY_DURATION);
                 },
             }
         }
-        let (sender, receiver) = setup_ipc(socket, path);
+        let (sender, receiver) = setup_ipc(socket, path).unwrap_or_else(|err| {
+            let session_name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+            eprintln!(
+                "Failed to establish the Zellij reply IPC channel for session '{session_name}': {err}"
+            );
+            process::exit(1);
+        });
         *self.send_instructions_to_server.lock().unwrap() = Some(sender);
         *self.receive_instructions_from_server.lock().unwrap() = Some(receiver);
     }
