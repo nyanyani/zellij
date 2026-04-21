@@ -1,3 +1,4 @@
+use std::os::windows::raw::HANDLE;
 use std::sync::OnceLock;
 
 use crossterm::event::{self, Event, KeyEventKind};
@@ -29,7 +30,7 @@ static ORIGINAL_CONSOLE_MODE: OnceLock<u32> = OnceLock::new();
 pub(crate) fn enable_vt_input() -> bool {
     unsafe {
         let handle = GetStdHandle(STD_INPUT_HANDLE);
-        if handle == 0 || handle == INVALID_HANDLE_VALUE {
+        if handle == (0 as HANDLE) || handle == INVALID_HANDLE_VALUE {
             return false;
         }
         let mut mode: u32 = 0;
@@ -77,7 +78,7 @@ pub(crate) fn restore_vt_input() {
     if let Some(&original_mode) = ORIGINAL_CONSOLE_MODE.get() {
         unsafe {
             let handle = GetStdHandle(STD_INPUT_HANDLE);
-            if handle != 0 && handle != INVALID_HANDLE_VALUE {
+            if handle != (0 as HANDLE) && handle != INVALID_HANDLE_VALUE {
                 SetConsoleMode(handle, original_mode);
             }
         }

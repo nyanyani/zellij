@@ -6,7 +6,7 @@ use std::{
     ffi::OsStr,
     io,
     os::windows::ffi::OsStrExt,
-    os::windows::io::{FromRawHandle, IntoRawHandle, OwnedHandle},
+    os::windows::io::{AsRawHandle, FromRawHandle, IntoRawHandle, OwnedHandle},
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex,
@@ -16,22 +16,24 @@ use std::{
 use tokio::io::AsyncReadExt;
 use tokio::net::windows::named_pipe::NamedPipeServer;
 
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, S_OK};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, FlushFileBuffers, WriteFile, FILE_FLAG_OVERLAPPED, OPEN_EXISTING,
+    CreateFileW, FlushFileBuffers, FILE_FLAG_OVERLAPPED, OPEN_EXISTING,
 };
-use windows_sys::Win32::System::Console::{
-    ClosePseudoConsole, CreatePseudoConsole, GenerateConsoleCtrlEvent, ResizePseudoConsole, COORD,
-    CTRL_C_EVENT, HPCON,
-};
+use windows_sys::Win32::System::Console::{COORD, HPCON};
 use windows_sys::Win32::System::Pipes::{CreateNamedPipeW, CreatePipe};
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess,
-    InitializeProcThreadAttributeList, OpenProcess, TerminateProcess, UpdateProcThreadAttribute,
-    WaitForSingleObject, CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT, INFINITE,
-    PROCESS_INFORMATION, PROCESS_TERMINATE, STARTUPINFOEXW, STARTUPINFOW,
+    InitializeProcThreadAttributeList, UpdateProcThreadAttribute, WaitForSingleObject,
+    CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT, INFINITE, PROCESS_INFORMATION,
+    STARTUPINFOEXW, STARTUPINFOW,
 };
 
+use zellij_utils::conpty::calls::{ClosePseudoConsole, CreatePseudoConsole, ResizePseudoConsole};
+// use zellij_utils::conpty::windows_console::{
+//     close_pseudo_console, create_pseudo_console, resize_pseudo_console,
+// };
+use zellij_utils::conpty::windows_pane_control::{PaneControlTarget, WindowsPaneControlAdapter};
 use zellij_utils::{errors::prelude::*, input::command::RunCommand};
 
 pub use async_trait::async_trait;
@@ -65,7 +67,7 @@ impl Drop for ConPtyTerminal {
             // Close the pseudo console first — it may write a final VT frame
             // to the output pipe. The async reader task (if still alive) will
             // drain it. Then close the remaining handle.
-            ClosePseudoConsole(self.hpcon);
+            let _ = ClosePseudoConsole(self.hpcon);
             CloseHandle(self.input_write_handle);
         }
     }
@@ -226,7 +228,7 @@ fn create_overlapped_output_pipe(terminal_id: u32) -> io::Result<(HANDLE, HANDLE
             std::ptr::null(), // default security
             OPEN_EXISTING,    // pipe already exists
             0,                // synchronous
-            0,                // no template
+            0 as HANDLE,      // no template
         )
     };
     if client == INVALID_HANDLE_VALUE {
@@ -249,13 +251,7 @@ fn create_conpty(
         X: cols as i16,
         Y: rows as i16,
     };
-    let mut hpcon: HPCON = 0;
-    let hr = unsafe { CreatePseudoConsole(size, input_read, output_write, 0, &mut hpcon) };
-    if hr != S_OK {
-        Err(io::Error::from_raw_os_error(hr))
-    } else {
-        Ok(hpcon)
-    }
+    unsafe { CreatePseudoConsole(size, input_read, output_write, 0) }.map_err(io::Error::other)
 }
 
 /// Spawn a child process attached to the given ConPTY.
@@ -347,21 +343,6 @@ fn spawn_child_process(
     Ok((pi.hProcess, pi.hThread, pi.dwProcessId))
 }
 
-fn terminate_process(pid: u32) -> std::result::Result<(), std::io::Error> {
-    unsafe {
-        let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
-        if handle == 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        let ok = TerminateProcess(handle, 1);
-        CloseHandle(handle);
-        if ok == 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-    }
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
 // WindowsPtyBackend
 // ---------------------------------------------------------------------------
@@ -370,12 +351,14 @@ fn terminate_process(pid: u32) -> std::result::Result<(), std::io::Error> {
 #[derive(Clone)]
 pub(crate) struct WindowsPtyBackend {
     terminals: Arc<Mutex<BTreeMap<u32, Option<ConPtyTerminal>>>>,
+    pane_control: WindowsPaneControlAdapter,
 }
 
 impl WindowsPtyBackend {
     pub fn new() -> Result<Self, io::Error> {
         Ok(Self {
             terminals: Arc::new(Mutex::new(BTreeMap::new())),
+            pane_control: WindowsPaneControlAdapter::new(),
         })
     }
 
@@ -398,8 +381,8 @@ impl WindowsPtyBackend {
             create_overlapped_output_pipe(terminal_id).with_context(|| err_context(&cmd))?;
 
         // 2. Input pipe pair (anonymous, both synchronous)
-        let mut input_read: HANDLE = 0;
-        let mut input_write: HANDLE = 0;
+        let mut input_read: HANDLE = 0 as HANDLE;
+        let mut input_write: HANDLE = 0 as HANDLE;
         if unsafe { CreatePipe(&mut input_read, &mut input_write, std::ptr::null(), 0) } == 0 {
             unsafe {
                 CloseHandle(output_read);
@@ -434,7 +417,7 @@ impl WindowsPtyBackend {
                 Ok(r) => r,
                 Err(e) => {
                     unsafe {
-                        ClosePseudoConsole(hpcon);
+                        let _ = ClosePseudoConsole(hpcon);
                         CloseHandle(input_write);
                         CloseHandle(output_read);
                     }
@@ -442,8 +425,10 @@ impl WindowsPtyBackend {
                 },
             };
 
+        let process_handle = unsafe { OwnedHandle::from_raw_handle(process_handle) };
+
         // Thread handle is not needed after spawn.
-        unsafe { CloseHandle(thread_handle) };
+        drop(unsafe { OwnedHandle::from_raw_handle(thread_handle) });
 
         // 6. Store per-terminal state
         self.terminals.lock().unwrap().insert(
@@ -457,11 +442,11 @@ impl WindowsPtyBackend {
         // 7. Exit-monitoring thread (zero CPU — spends all time in kernel wait)
         let cmd_for_monitor = cmd.clone();
         std::thread::spawn(move || {
+            let process_handle = process_handle.as_raw_handle() as HANDLE;
             let exit_code = unsafe {
                 WaitForSingleObject(process_handle, INFINITE);
                 let mut code: u32 = 0;
                 GetExitCodeProcess(process_handle, &mut code);
-                CloseHandle(process_handle);
                 code
             };
             quit_cb(
@@ -530,11 +515,8 @@ impl WindowsPtyBackend {
                         X: cols as i16,
                         Y: rows as i16,
                     };
-                    let hr = unsafe { ResizePseudoConsole(term.hpcon, size) };
-                    if hr != S_OK {
-                        Err::<(), _>(anyhow!("ResizePseudoConsole failed: HRESULT 0x{:08x}", hr))
-                            .with_context(err_context)
-                            .non_fatal();
+                    if let Err(err) = unsafe { ResizePseudoConsole(term.hpcon, size) } {
+                        Err::<(), _>(err).with_context(err_context).non_fatal();
                     }
                 }
             },
@@ -557,23 +539,10 @@ impl WindowsPtyBackend {
             .with_context(err_context)?
             .get(&terminal_id)
         {
-            Some(Some(term)) => {
-                let mut written: u32 = 0;
-                let ok = unsafe {
-                    WriteFile(
-                        term.input_write_handle,
-                        buf.as_ptr(),
-                        buf.len() as u32,
-                        &mut written,
-                        std::ptr::null_mut(),
-                    )
-                };
-                if ok == 0 {
-                    Err(io::Error::last_os_error()).with_context(err_context)
-                } else {
-                    Ok(written as usize)
-                }
-            },
+            Some(Some(term)) => self
+                .pane_control
+                .write_input(&PaneControlTarget::for_input(term.input_write_handle), buf)
+                .with_context(err_context),
             _ => Err(anyhow!("no ConPTY terminal found for id {}", terminal_id))
                 .with_context(err_context),
         }
@@ -605,24 +574,18 @@ impl WindowsPtyBackend {
     }
 
     pub fn kill(&self, pid: u32) -> Result<()> {
-        terminate_process(pid).with_context(|| format!("failed to kill pid {}", pid))?;
-        Ok(())
+        self.pane_control
+            .terminate_pane(&PaneControlTarget::for_process(pid))
     }
 
     pub fn force_kill(&self, pid: u32) -> Result<()> {
-        terminate_process(pid).with_context(|| format!("failed to force-kill pid {}", pid))?;
-        Ok(())
+        self.pane_control
+            .force_terminate_pane(&PaneControlTarget::for_process(pid))
     }
 
     pub fn send_sigint(&self, pid: u32) -> Result<()> {
-        let ok = unsafe { GenerateConsoleCtrlEvent(CTRL_C_EVENT, pid) };
-        if ok != 0 {
-            Ok(())
-        } else {
-            terminate_process(pid)
-                .with_context(|| format!("failed to send SIGINT to pid {}", pid))?;
-            Ok(())
-        }
+        self.pane_control
+            .interrupt_pane(&PaneControlTarget::for_process(pid))
     }
 
     pub fn reserve_terminal_id(&self, terminal_id: u32) {

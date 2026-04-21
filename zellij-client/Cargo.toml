@@ -3,8 +3,8 @@ name = "zellij-client"
 version.workspace = true
 authors = ["Kunal Mohan <kunalmohan99@gmail.com>"]
 edition.workspace = true
-description = "The client-side library for Zellij"
 license.workspace = true
+description = "The client-side library for Zellij"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -12,10 +12,10 @@ license.workspace = true
 # TODO: we might want to move these to be workspace dependencies as well, but
 # work is currently being done on moving all our async stuff to tokio from async_std,
 # so let's see how that works out before rocking the boat
-futures = { version = "0.3.30", optional = true }
 axum = { version = "0.8.4", features = ["ws"], optional = true }
 axum-extra = { version = "0.10.1", features = ["cookie"], optional = true }
 axum-server = { version = "0.7", features = ["tls-rustls"], optional = true }
+futures = { version = "0.3.30", optional = true }
 time = { version = "0.3", optional = true }
 tower-http = { version = "0.6.4", features = ["cors"], optional = true }
 
@@ -23,30 +23,30 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 crossterm = { workspace = true, features = ["events", "bracketed-paste"] }
 dialoguer = { workspace = true }
+futures-util = "0.3"
+include_dir = { workspace = true }
 interprocess = { workspace = true }
+isahc = { workspace = true }
 lazy_static = { workspace = true }
 log = { workspace = true }
 notify = { workspace = true }
 num_cpus = { workspace = true }
 regex = { workspace = true }
+rustls = { version = "0.23", default-features = false, features = ["std"] }
+rustls-native-certs = "0.8"
+rustls-pemfile = "2"
+rustls-pki-types = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { version = "0.8", default-features = false }
-url = { workspace = true }
-uuid = { workspace = true }
-include_dir = { workspace = true }
-zellij-utils = { workspace = true }
 tokio = { workspace = true }
-tokio-util = { workspace = true }
-isahc = { workspace = true }
-tokio-tungstenite = "0.20"
-rustls = { version = "0.23", default-features = false, features = ["std"] }
 tokio-rustls = "0.26"
-rustls-pemfile = "2"
-rustls-native-certs = "0.8"
-rustls-pki-types = "1"
-futures-util = "0.3"
+tokio-tungstenite = "0.20"
+tokio-util = { workspace = true }
+url = { workspace = true }
 urlencoding = "2.1"
+uuid = { workspace = true }
+zellij-utils = { workspace = true }
 
 [target.'cfg(not(windows))'.dependencies]
 signal-hook = { workspace = true }
