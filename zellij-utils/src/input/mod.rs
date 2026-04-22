@@ -91,6 +91,22 @@ mod not_wasm {
             return KeyWithModifier::new(BareKey::Char('h')).with_ctrl_modifier();
         };
 
+        if raw_bytes == [0x1c] {
+            return KeyWithModifier::new(BareKey::Char('\\')).with_ctrl_modifier();
+        };
+
+        if raw_bytes == [0x1d] {
+            return KeyWithModifier::new(BareKey::Char(']')).with_ctrl_modifier();
+        };
+
+        if raw_bytes == [0x1e] {
+            return KeyWithModifier::new(BareKey::Char('^')).with_ctrl_modifier();
+        };
+
+        if raw_bytes == [0x1f] {
+            return KeyWithModifier::new(BareKey::Char('_')).with_ctrl_modifier();
+        };
+
         if raw_bytes == [10] {
             if let Some((keybinds, mode)) = keybinds_mode {
                 let ctrl_j = KeyWithModifier::new(BareKey::Char('j')).with_ctrl_modifier();
@@ -458,6 +474,48 @@ mod not_wasm {
             KeyWithModifier::new_with_modifiers(bare_key, modifiers),
             raw_bytes,
         ))
+    }
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+mod termwiz_key_tests {
+    use super::not_wasm::cast_termwiz_key;
+    use crate::{
+        data::{BareKey, KeyWithModifier},
+        vendored::termwiz::input::{KeyCode, KeyEvent, Modifiers},
+    };
+
+    fn make_key_event(raw_byte: u8) -> KeyEvent {
+        KeyEvent {
+            key: KeyCode::Char(raw_byte as char),
+            modifiers: Modifiers::NONE,
+        }
+    }
+
+    fn assert_raw_ctrl_byte_casts_to(raw_byte: u8, expected_char: char) {
+        let key = cast_termwiz_key(make_key_event(raw_byte), &[raw_byte], None);
+        let expected = KeyWithModifier::new(BareKey::Char(expected_char)).with_ctrl_modifier();
+        assert_eq!(key, expected);
+    }
+
+    #[test]
+    fn cast_termwiz_key_ctrl_backslash_raw_byte_gets_ctrl_modifier() {
+        assert_raw_ctrl_byte_casts_to(0x1c, '\\');
+    }
+
+    #[test]
+    fn cast_termwiz_key_ctrl_right_bracket_raw_byte_gets_ctrl_modifier() {
+        assert_raw_ctrl_byte_casts_to(0x1d, ']');
+    }
+
+    #[test]
+    fn cast_termwiz_key_ctrl_caret_raw_byte_gets_ctrl_modifier() {
+        assert_raw_ctrl_byte_casts_to(0x1e, '^');
+    }
+
+    #[test]
+    fn cast_termwiz_key_ctrl_underscore_raw_byte_gets_ctrl_modifier() {
+        assert_raw_ctrl_byte_casts_to(0x1f, '_');
     }
 }
 

@@ -183,9 +183,12 @@ fn build_release(sh: &Shell, no_web: bool) -> anyhow::Result<()> {
                         .map_err(anyhow::Error::new),
                 }
             } else {
-                cmd!(sh, "{cargo} build --verbose --release --features vendored_curl")
-                    .run()
-                    .map_err(anyhow::Error::new)
+                cmd!(
+                    sh,
+                    "{cargo} build --verbose --release --features vendored_curl"
+                )
+                .run()
+                .map_err(anyhow::Error::new)
             }
         })
         .context(err_context)

@@ -14,19 +14,29 @@ permissions:
 jobs:
   create-release:
     runs-on: ubuntu-latest
-    outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
     steps:
-      - name: Create draft release
-        id: create_release
-        uses: actions/create-release@v1
+      - name: Ensure draft release exists
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ inputs.tag_name }}
-          release_name: Release ${{ inputs.tag_name }} (Windows x86_64)
-          draft: true
-          prerelease: false
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ inputs.tag_name }}
+        run: |
+          release_id=$(gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate --jq \
+            '.[] | select(.tag_name == env.TAG_NAME and .draft) | .id' | head -n 1)
+
+          if [ -n "$release_id" ]; then
+            gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+              --method PATCH \
+              -f name="Release ${TAG_NAME} (Windows x86_64)" \
+              -F draft=true \
+              -F prerelease=false >/dev/null
+          else
+            gh release create "$TAG_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "Release ${TAG_NAME} (Windows x86_64)" \
+              --draft \
+              --notes ""
+          fi
 
   build-release:
     needs: create-release
@@ -91,24 +101,18 @@ jobs:
           echo "checksum_name=$checksum_name" >> $env:GITHUB_OUTPUT
 
       - name: Upload release archive
-        uses: actions/upload-release-asset@v1.0.2
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ${{ steps.make-artifact.outputs.asset_name }}
-          asset_name: ${{ steps.make-artifact.outputs.asset_name }}
-          asset_content_type: application/octet-stream
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          gh release upload "${{ inputs.tag_name }}" "${{ steps.make-artifact.outputs.asset_name }}" --clobber --repo "${{ github.repository }}"
 
       - name: Upload release checksum
-        uses: actions/upload-release-asset@v1.0.2
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ${{ steps.make-checksum.outputs.checksum_name }}
-          asset_name: ${{ steps.make-checksum.outputs.checksum_name }}
-          asset_content_type: text/plain
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          gh release upload "${{ inputs.tag_name }}" "${{ steps.make-checksum.outputs.checksum_name }}" --clobber --repo "${{ github.repository }}"
 
       - name: Install WiX v6
         run: dotnet tool install --global wix --version 6.0.2
@@ -145,21 +149,26 @@ jobs:
           echo "checksum_name=$checksum_name" >> $env:GITHUB_OUTPUT
 
       - name: Upload MSI installer
-        uses: actions/upload-release-asset@v1.0.2
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ${{ steps.build-msi.outputs.msi_path }}
-          asset_name: ${{ steps.build-msi.outputs.msi_name }}
-          asset_content_type: application/octet-stream
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          gh release upload "${{ inputs.tag_name }}" "${{ steps.build-msi.outputs.msi_path }}" --clobber --repo "${{ github.repository }}"
 
       - name: Upload MSI checksum
-        uses: actions/upload-release-asset@v1.0.2
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ${{ steps.make-checksum-msi.outputs.checksum_name }}
-          asset_name: ${{ steps.make-checksum-msi.outputs.checksum_name }}
-          asset_content_type: text/plain
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          gh release upload "${{ inputs.tag_name }}" "${{ steps.make-checksum-msi.outputs.checksum_name }}" --clobber --repo "${{ github.repository }}"
+
+  publish-release:
+    needs: build-release
+    runs-on: ubuntu-latest
+    if: ${{ needs.build-release.result == 'success' }}
+    steps:
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "${{ inputs.tag_name }}" --draft=false --repo "${{ github.repository }}"
