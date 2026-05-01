@@ -309,6 +309,10 @@ mod not_wasm {
     ) -> Option<(KeyWithModifier, Vec<u8>)> {
         use crossterm::event::{KeyCode as CKeyCode, KeyModifiers};
 
+        fn should_use_csi_u_for_ctrl_char(c: char) -> bool {
+            matches!(c.to_ascii_lowercase(), 'h' | 'j' | 'k' | 'l')
+        }
+
         let ct_mods = event.modifiers;
         let mut modifiers = BTreeSet::new();
         if ct_mods.contains(KeyModifiers::CONTROL) {
@@ -351,9 +355,17 @@ mod not_wasm {
                     let mut buf = [0u8; 4];
                     c.encode_utf8(&mut buf).as_bytes().to_vec()
                 } else if has_ctrl && has_alt && c.is_ascii_alphabetic() {
-                    vec![0x1b, (c.to_ascii_lowercase() as u8) & 0x1f]
+                    if should_use_csi_u_for_ctrl_char(c) {
+                        format!("\x1b[{};7u", c.to_ascii_lowercase() as u32).into_bytes()
+                    } else {
+                        vec![0x1b, (c.to_ascii_lowercase() as u8) & 0x1f]
+                    }
                 } else if has_ctrl && c.is_ascii_alphabetic() {
-                    vec![(c.to_ascii_lowercase() as u8) & 0x1f]
+                    if should_use_csi_u_for_ctrl_char(c) {
+                        format!("\x1b[{};5u", c.to_ascii_lowercase() as u32).into_bytes()
+                    } else {
+                        vec![(c.to_ascii_lowercase() as u8) & 0x1f]
+                    }
                 } else if has_alt {
                     let mut b = vec![0x1b];
                     let mut buf = [0u8; 4];
@@ -564,5 +576,33 @@ mod windows_key_tests {
             b"\x1b[13;5u".to_vec(),
             "Ctrl+Enter should get CSI u encoding"
         );
+    }
+
+    #[test]
+    fn cast_crossterm_key_ctrl_h_gets_csi_u_encoding() {
+        let event = make_key_event(KeyCode::Char('h'), KeyModifiers::CONTROL);
+        let (_, bytes) = cast_crossterm_key(event).unwrap();
+        assert_eq!(bytes, b"\x1b[104;5u".to_vec());
+    }
+
+    #[test]
+    fn cast_crossterm_key_ctrl_j_gets_csi_u_encoding() {
+        let event = make_key_event(KeyCode::Char('j'), KeyModifiers::CONTROL);
+        let (_, bytes) = cast_crossterm_key(event).unwrap();
+        assert_eq!(bytes, b"\x1b[106;5u".to_vec());
+    }
+
+    #[test]
+    fn cast_crossterm_key_ctrl_k_gets_csi_u_encoding() {
+        let event = make_key_event(KeyCode::Char('k'), KeyModifiers::CONTROL);
+        let (_, bytes) = cast_crossterm_key(event).unwrap();
+        assert_eq!(bytes, b"\x1b[107;5u".to_vec());
+    }
+
+    #[test]
+    fn cast_crossterm_key_ctrl_l_gets_csi_u_encoding() {
+        let event = make_key_event(KeyCode::Char('l'), KeyModifiers::CONTROL);
+        let (_, bytes) = cast_crossterm_key(event).unwrap();
+        assert_eq!(bytes, b"\x1b[108;5u".to_vec());
     }
 }
